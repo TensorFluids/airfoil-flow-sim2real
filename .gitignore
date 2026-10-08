@@ -1,0 +1,35 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+RULES.md
+
+# Downloaded data, model checkpoints, and submission bundles
+checkpoints/
+*.h5
+*.tar.gz
+*.ckpt
+*.pt
+*.pth
+experiments/results/
+experiments/submissions/
+
+# Local caches and editor files
+.ua/
+.cache/
+*.cache
+_vendor/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

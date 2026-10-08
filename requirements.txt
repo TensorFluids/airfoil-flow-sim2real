@@ -1,0 +1,10 @@
+# Core numerical and model dependencies
+numpy>=1.24
+torch>=2.2
+einops>=0.8
+
+# Data loading and experiment utilities
+h5py>=3.8
+matplotlib>=3.7
+scipy>=1.10
+tqdm>=4.65
