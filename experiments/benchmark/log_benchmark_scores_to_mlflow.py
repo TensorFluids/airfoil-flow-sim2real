@@ -3,6 +3,9 @@
 Run from the Track1 directory after scoring:
     python experiments/benchmark/log_benchmark_scores_to_mlflow.py
 
+The uniform-average control gets one model run on its first import; later
+imports update that same run. --models can restrict an import to selected models.
+
 The scorer exposes five subscores but does not publish the leaderboard's
 final_score formula. This script also logs their arithmetic mean as
 ``mean_subscore``; it is a derived, unofficial summary, not the official final
@@ -32,6 +35,7 @@ MODEL_RUNS = {
     "fno_fp16": "baseline-fno_fp16",
     "cno": "baseline-cno",
     "transolver": "baseline-transolver",
+    "uniform_average": "uniform-average",
     "ensemble": "stacked-ensemble",
     "fst_hmoe": "fst-hmoe-mixer",
 }
@@ -40,6 +44,7 @@ METRIC_KEYS = ("rel_l2_score", "tke_score", "mvpe_score", "time_score", "sps_sco
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--models", nargs="+", choices=tuple(MODEL_RUNS))
     parser.add_argument(
         "--archive-standalone-runs",
         action="store_true",
@@ -66,9 +71,18 @@ def main() -> None:
 
     # Resolve all destinations before writing anything, so ambiguous/missing
     # model runs cannot leave a partial update.
+    selected_models = args.models if args.models is not None else list(MODEL_RUNS)
+    # Preserve the original workflow when the optional control has not yet
+    # been generated and scored.
+    if args.models is None and not (SCORE_DIR / "uniform_average" / "scores.json").is_file():
+        selected_models.remove("uniform_average")
     destinations = {}
-    for model, run_name in MODEL_RUNS.items():
+    for model in selected_models:
+        run_name = MODEL_RUNS[model]
         matches = by_name.get(run_name, [])
+        if model == "uniform_average" and not matches:
+            destinations[model] = None
+            continue
         if len(matches) != 1:
             raise RuntimeError(
                 f"Expected exactly one MLflow run named {run_name!r}; found {len(matches)}."
@@ -76,7 +90,7 @@ def main() -> None:
         destinations[model] = matches[0]
 
     loaded_scores = {}
-    for model in MODEL_RUNS:
+    for model in selected_models:
         score_path = SCORE_DIR / model / "scores.json"
         if not score_path.is_file():
             raise FileNotFoundError(f"Missing score file: {score_path}")
@@ -90,12 +104,39 @@ def main() -> None:
         loaded_scores[model] = (score_path, scores)
 
     for model, run in destinations.items():
-        _, scores = loaded_scores[model]
+        is_new_control = run is None
+        if is_new_control:
+            run = client.create_run(
+                experiment.experiment_id,
+                tags={
+                    "mlflow.runName": MODEL_RUNS[model],
+                    "kind": "model_control",
+                    "model_id": model,
+                },
+            )
+            for key, value in {
+                "model": model,
+                "components": "FNO,CNO,Transolver",
+                "weights": "1/3,1/3,1/3",
+                "trainable_parameters": 0,
+            }.items():
+                client.log_param(run.info.run_id, key, value)
+        score_path, scores = loaded_scores[model]
         for key, value in scores.items():
             client.log_metric(run.info.run_id, key, value, timestamp=int(time.time() * 1000), step=0)
         client.set_tag(run.info.run_id, "benchmark_evaluated", "true")
         client.set_tag(run.info.run_id, "benchmark_evaluation_scope", "single_public_example_trajectory")
         client.set_tag(run.info.run_id, "mean_subscore_definition", "arithmetic_mean_of_five_subscores_unofficial")
+        if model == "uniform_average":
+            client.log_artifact(run.info.run_id, str(score_path), artifact_path="benchmark")
+            metadata_path = SCORE_DIR.parent / model / "metadata.json"
+            if metadata_path.is_file():
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                client.set_tag(run.info.run_id, "timing_method", metadata["timing_method"])
+                client.log_param(run.info.run_id, "evaluation_windows", metadata["evaluation_windows"])
+                client.log_artifact(run.info.run_id, str(metadata_path), artifact_path="benchmark")
+        if is_new_control:
+            client.set_terminated(run.info.run_id, status="FINISHED")
         print(f"Attached {len(scores)} benchmark metrics to {run.info.run_name}")
 
     standalone_runs = [

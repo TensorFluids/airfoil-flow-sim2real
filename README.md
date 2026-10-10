@@ -16,6 +16,8 @@ The repository contains three exploratory approaches:
 - **Learned baseline ensemble:** combines predictions from frozen FNO, CNO, and Transolver models with a learned spatiotemporal mixer.
 - **FST-HMoE mixer:** combines the same baseline predictions using temporal and local spatial attention with a mixture-of-experts block.
 
+An **untrained uniform-average control** combines FNO, CNO, and Transolver with fixed weights of `1/3` each. Comparing both trainable mixers with this control measures what their learned corrections add beyond averaging.
+
 Training code is under `experiments/finetune/`, model definitions are under `experiments/models/`, and local evaluation tools are under `experiments/benchmark/`.
 
 ## Evaluation
@@ -23,6 +25,16 @@ Training code is under `experiments/finetune/`, model definitions are under `exp
 Experiments use five complementary measures: relative velocity error, turbulent kinetic energy (TKE) error, mean velocity profile error (MVPE), inference time, and Safe Prediction Score (SPS), which considers prediction accuracy and uncertainty intervals.
 
 The checked-in experiment scripts currently evaluate against windows from a single example trajectory. Their results are preliminary and do not establish generalization across airfoil operating conditions. In particular, some recorded runtime measurements exclude the baseline-model forward passes, so they should not be read as end-to-end timings.
+
+Once the three baseline predictions are cached, run the control and comparison from the repository root:
+
+```bash
+python experiments/benchmark/run_average_benchmark.py
+python experiments/benchmark/compare_models.py
+python experiments/benchmark/log_benchmark_scores_to_mlflow.py --models uniform_average
+```
+
+This reuses the physical-space predictions without training or loading the baseline models again. The comparison report includes raw prediction-error reductions against the average. Its runtime is an estimate from cached baseline times plus measured averaging overhead; use prediction errors to assess the mixers until all models have comparable end-to-end timings. The control's scores are stored in one `uniform-average` MLflow run, which is reused on subsequent imports.
 
 ## Repository contents
 

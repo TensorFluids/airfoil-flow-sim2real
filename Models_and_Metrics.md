@@ -207,6 +207,22 @@ All trained with the RealPDEBench codebase. Checkpoints in `Track1/checkpoints/s
 
 ---
 
+## Our Models
+
+### Uniform Average Control
+
+An untrained reference that averages the cached physical-space predictions of FNO, CNO, and Transolver with equal weights (`1/3` each). It has no fitted parameters and uses the same evaluation windows as both mixers. This control isolates the benefit of their learned corrections from the benefit of simply combining the baseline forecasts.
+
+### Stacked Ensemble
+
+Combines predictions from the three frozen baseline models (FNO, CNO, and Transolver). Their outputs are concatenated, then a small trainable 3D convolutional mixer learns how to blend them across space and time. A residual connection starts from the simple average of the three predictions, so the mixer learns refinements to that average rather than building a forecast from scratch.
+
+### FST-HMoE Mixer
+
+Also starts from the three frozen baseline predictions, but uses a spatiotemporal mixer to refine their average. Temporal self-attention models changes across frames, while local windowed spatial attention shares information between nearby grid points. A learned gate combines those representations, and a six-expert mixture (three MLP experts and three temporal-convolution experts) produces a residual correction. This combines the baselines' forecasts with a compact learned model of local space-time structure.
+
+---
+
 ## Comparison Table
 
 | | FNO | CNO | Transolver |

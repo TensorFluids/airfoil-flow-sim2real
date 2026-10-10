@@ -37,13 +37,14 @@ from scoring import (  # noqa: E402
     tke_rel_l2_per_sample,
     kinetic_energy,
     measured_channels,
+    mvpe_rel_l2_per_sample,
 )
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 RESULTS_DIR = os.path.join(REPO_ROOT, "experiments", "results")
 REF_DIR = os.path.join(RESULTS_DIR, "ref")
 
-MODELS = ["fno_fp16", "cno", "transolver", "ensemble", "fst_hmoe"]
+MODELS = ["fno_fp16", "cno", "transolver", "uniform_average", "ensemble", "fst_hmoe"]
 SUBSCORES = ["rel_l2_score", "tke_score", "mvpe_score", "time_score", "sps_score"]
 
 
@@ -222,7 +223,40 @@ def plot_tke(
 
 # ── report ─────────────────────────────────────────────────────────────────────
 
-def write_report(all_scores: dict[str, dict], table: str, out_path: str) -> None:
+def compare_to_average(model_preds: dict[str, np.ndarray], targets: np.ndarray) -> dict:
+    """Compare prediction errors on paired windows, independent of timing."""
+    if "uniform_average" not in model_preds:
+        return {}
+    c = measured_channels(targets)
+    error_functions = {
+        "rel_l2": lambda pred: rel_l2_per_sample(pred, targets, c),
+        "tke_rel_l2": lambda pred: tke_rel_l2_per_sample(pred, targets, c),
+        "mvpe_rel_l2": lambda pred: mvpe_rel_l2_per_sample(pred, targets),
+    }
+    control_errors = {key: fn(model_preds["uniform_average"]) for key, fn in error_functions.items()}
+    result = {}
+    for model in ("uniform_average", "ensemble", "fst_hmoe"):
+        if model not in model_preds:
+            continue
+        result[model] = {}
+        for metric, fn in error_functions.items():
+            errors = fn(model_preds[model])
+            reference = control_errors[metric]
+            reference_mean = float(np.mean(reference))
+            mean_error = float(np.mean(errors))
+            result[model][metric] = {
+                "mean_error": mean_error,
+                "error_reduction_percent_vs_average": (
+                    100.0 * (reference_mean - mean_error) / reference_mean
+                    if reference_mean > 0.0 else None
+                ),
+                "improved_windows": int(np.count_nonzero(errors < reference)),
+                "evaluation_windows": len(errors),
+            }
+    return result
+
+
+def write_report(all_scores: dict[str, dict], table: str, out_path: str, control_comparison: dict | None = None) -> None:
     lines = [
         "# RealPDE Track 1 – Benchmark Report",
         "",
@@ -241,6 +275,36 @@ def write_report(all_scores: dict[str, dict], table: str, out_path: str) -> None
         for k, v in scores.items():
             lines.append(f"- **{k}**: {v:.4f}" if isinstance(v, float) else f"- **{k}**: {v}")
         lines.append("")
+
+    if control_comparison:
+        lines += [
+            "## Untrained Average Control",
+            "",
+            "Equal weights (1/3 each) for cached FNO, CNO, and Transolver predictions; no fitted parameters. "
+            f"All models use the same {control_comparison['uniform_average']['rel_l2']['evaluation_windows']} "
+            "public-example windows and the scorer's default uncertainty intervals.",
+            "",
+            "Raw errors below exclude inference time; lower is better. Error reductions compare each mixer "
+            "with the untrained average (positive means improvement).",
+            "",
+            "| Model | Rel-L2 error | Reduction | TKE error | Reduction | MVPE error | Reduction |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        for model, metrics in control_comparison.items():
+            columns = []
+            for key in ("rel_l2", "tke_rel_l2", "mvpe_rel_l2"):
+                entry = metrics[key]
+                reduction = entry["error_reduction_percent_vs_average"]
+                columns += [f"{entry['mean_error']:.6f}", f"{reduction:+.2f}%" if reduction is not None else "N/A"]
+            lines.append(f"| {model} | " + " | ".join(columns) + " |")
+        lines += [
+            "",
+            "Timing caveat: the average uses an estimated sum of cached base-model runtimes plus measured "
+            "averaging overhead; HMoE's recorded time excludes the base models. Runtime scores and the five-score "
+            "mean therefore cannot establish whether training improves the forecasts. These windows come from "
+            "one trajectory and do not establish generalization or statistical significance.",
+            "",
+        ]
 
     lines += [
         "## Plots",
@@ -320,7 +384,11 @@ def main() -> None:
         plot_tke(model_preds, targets, os.path.join(RESULTS_DIR, "tke_comparison.png"))
 
     report_path = os.path.join(RESULTS_DIR, "benchmark_report.md")
-    write_report(all_scores, table, report_path)
+    control_comparison = compare_to_average(model_preds, targets)
+    if control_comparison:
+        with open(os.path.join(RESULTS_DIR, "averaging_control_comparison.json"), "w", encoding="utf-8") as f:
+            json.dump(control_comparison, f, indent=2)
+    write_report(all_scores, table, report_path, control_comparison)
 
     print("\nAll done.")
 

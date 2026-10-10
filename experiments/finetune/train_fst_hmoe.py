@@ -57,11 +57,11 @@ class TrainConfig:
     checkpoint_name: str = "best_fst_hmoe.pth"
     # Optional checkpoint to continue from. The existing checkpoint has no
     # optimizer/scheduler state, so that older run resumes with fresh states.
-    # resume_checkpoint: str | None = None
-    resume_checkpoint: str | None = os.path.join(
-    _TRACK1, "checkpoints", "fst_hmoe", "best_fst_hmoe.pth"
-    )
-    epochs: int = 4
+    resume_checkpoint: str | None = None
+    # resume_checkpoint: str | None = os.path.join(
+    # _TRACK1, "checkpoints", "fst_hmoe", "best_fst_hmoe.pth"
+    # )
+    # epochs: int = 4
 
     # Split
     val_fraction: float = 0.15
