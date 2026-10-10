@@ -8,3 +8,4 @@ h5py>=3.8
 matplotlib>=3.7
 scipy>=1.10
 tqdm>=4.65
+mlflow>=2.10

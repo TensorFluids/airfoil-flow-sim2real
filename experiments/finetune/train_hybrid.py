@@ -42,6 +42,12 @@ from tqdm import tqdm
 from train_config import Config
 from dataset import RealPDEDataset
 from models.convlstm_fno import FNOConvLSTMHybrid
+from mlflow_tracking import (
+    log_epoch_metrics,
+    log_training_artifact,
+    log_training_params,
+    training_run,
+)
 
 # ---------------------------------------------------------------------------
 # Loss helpers
@@ -130,8 +136,7 @@ def _run_epoch(model, loader, optimizer, cfg, train: bool, device, grad_clip: fl
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    cfg = Config()
+def _train(cfg):
     device = torch.device(cfg.device)
 
     data_dir = os.path.join(_HERE, cfg.data_dir)
@@ -143,6 +148,7 @@ def main():
     train_ds = RealPDEDataset(data_dir, split="train", val_fraction=cfg.val_fraction, seed=cfg.seed)
     val_ds   = RealPDEDataset(data_dir, split="val",   val_fraction=cfg.val_fraction, seed=cfg.seed)
     print(f"  train windows: {len(train_ds)}, val windows: {len(val_ds)}")
+    log_training_params({"train_windows": len(train_ds), "validation_windows": len(val_ds)})
 
     print(f"Loading FNO from: {fno_ckpt}")
     model = FNOConvLSTMHybrid(
@@ -171,6 +177,7 @@ def main():
 
     # ---- Training loop with early stopping --------------------------------
     best_val_loss = float("inf")
+    best_epoch = 0
     patience = 10
     epochs_no_improve = 0
     ckpt_path = os.path.join(save_dir, "best_hybrid.pth")
@@ -190,9 +197,22 @@ def main():
             f"{epoch:>6}  {tr_loss:>10.6f}  {val_loss:>10.6f}"
             f"  {val_mse:>10.6f}  {val_tke:>10.6f}  {cur_lr:>10.2e}"
         )
+        log_epoch_metrics(
+            {
+                "train_loss": tr_loss,
+                "validation_loss": val_loss,
+                "train_mse": tr_mse,
+                "validation_mse": val_mse,
+                "train_tke": tr_tke,
+                "validation_tke": val_tke,
+                "learning_rate": cur_lr,
+            },
+            epoch,
+        )
 
         if val_loss < best_val_loss - 1e-6:
             best_val_loss = val_loss
+            best_epoch = epoch
             epochs_no_improve = 0
             torch.save(
                 {
@@ -222,6 +242,33 @@ def main():
                 break
 
     print(f"\nTraining complete. Best checkpoint: {ckpt_path}  (val_loss={best_val_loss:.6f})")
+    log_training_params({"best_epoch": best_epoch, "best_validation_loss": best_val_loss})
+    return ckpt_path
+
+
+def main():
+    cfg = Config()
+    with training_run(
+        "fno-convlstm-hybrid",
+        {
+            "model": "fno_convlstm_residual",
+            "base_model": "FNO",
+            "hidden_dim": cfg.hidden_dim,
+            "convlstm_layers": cfg.n_convlstm_layers,
+            "batch_size": cfg.batch_size,
+            "learning_rate": cfg.lr,
+            "epochs": cfg.epochs,
+            "validation_fraction": cfg.val_fraction,
+            "seed": cfg.seed,
+            "alpha_mse": cfg.alpha,
+            "beta_tke": cfg.beta,
+            "num_workers": cfg.num_workers,
+            "device": cfg.device,
+        },
+        tags={"kind": "trained_model", "model_family": "fno_convlstm"},
+    ):
+        checkpoint_path = _train(cfg)
+        log_training_artifact(checkpoint_path)
 
 
 if __name__ == "__main__":

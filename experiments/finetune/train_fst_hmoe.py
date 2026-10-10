@@ -38,6 +38,12 @@ for _p in (_TRACK1, _VENDOR, _EXPDIR):
 from finetune.dataset import RealPDEDataset  # noqa: E402
 from load_baseline import load_baseline  # noqa: E402
 from models.fst_hmoe_mixer import FSTHMoEConfig, FSTHMoEMixer  # noqa: E402
+from mlflow_tracking import (  # noqa: E402
+    log_epoch_metrics,
+    log_training_artifact,
+    log_training_params,
+    training_run,
+)
 
 
 @dataclass
@@ -49,6 +55,13 @@ class TrainConfig:
     transolver_ckpt: str = os.path.join(_TRACK1, "checkpoints", "sim_real_ft", "sim_real_transolver.pth")
     save_dir: str = os.path.join(_TRACK1, "checkpoints", "fst_hmoe")
     checkpoint_name: str = "best_fst_hmoe.pth"
+    # Optional checkpoint to continue from. The existing checkpoint has no
+    # optimizer/scheduler state, so that older run resumes with fresh states.
+    # resume_checkpoint: str | None = None
+    resume_checkpoint: str | None = os.path.join(
+    _TRACK1, "checkpoints", "fst_hmoe", "best_fst_hmoe.pth"
+    )
+    epochs: int = 4
 
     # Split
     val_fraction: float = 0.15
@@ -158,6 +171,7 @@ def build_cached_datasets(cfg: TrainConfig, device: torch.device) -> Tuple[Tenso
     train_ds = RealPDEDataset(cfg.data_dir, split="train", val_fraction=cfg.val_fraction, seed=cfg.seed)
     val_ds = RealPDEDataset(cfg.data_dir, split="val", val_fraction=cfg.val_fraction, seed=cfg.seed)
     print(f"  train windows: {len(train_ds)}  val windows: {len(val_ds)}")
+    log_training_params({"train_windows": len(train_ds), "validation_windows": len(val_ds)})
 
     print("Loading frozen base models (FNO/CNO/Transolver) …")
     fno, cno, transolver = _load_frozen_bases(cfg, device)
@@ -317,7 +331,41 @@ def fit_with_cached(
     }
 
     best_val = float("inf")
+    best_epoch = 0
     stale = 0
+
+    start_epoch = 1
+    if cfg.resume_checkpoint:
+        resume_path = os.path.abspath(cfg.resume_checkpoint)
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device)
+        saved_model_cfg = checkpoint.get("model_config")
+        if saved_model_cfg is not None and saved_model_cfg != asdict(model_cfg):
+            raise ValueError(
+                "Resume checkpoint model_config does not match the current model configuration. "
+                "Use the same architecture settings as the checkpoint."
+            )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if "scaler_state_dict" in checkpoint and scaler.is_enabled():
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        history.update(checkpoint.get("history", {}))
+        best_val = float(checkpoint.get("best_val_loss", float("inf")))
+        best_epoch = int(checkpoint.get("best_epoch", checkpoint.get("epoch", 0)))
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        print(
+            f"Resuming weights/history from {resume_path} at epoch {start_epoch}; "
+            f"best validation loss so far is {best_val:.6f}."
+        )
+        if start_epoch > cfg.epochs:
+            raise ValueError(
+                f"Target epochs ({cfg.epochs}) must be greater than the checkpoint epoch "
+                f"({start_epoch - 1})."
+            )
 
     print(
         f"\n{'Epoch':>6}  {'TrainLoss':>10}  {'ValLoss':>10}  {'ValKMSE':>10}  "
@@ -325,7 +373,7 @@ def fit_with_cached(
     )
     print("-" * 86)
 
-    epoch_bar = tqdm(range(1, cfg.epochs + 1), desc="Epochs", unit="ep")
+    epoch_bar = tqdm(range(start_epoch, cfg.epochs + 1), desc="Epochs", unit="ep")
     for epoch in epoch_bar:
         tr = _run_epoch(model, train_loader, optimizer, cfg, train=True, device=device, scaler=scaler)
         vl = _run_epoch(model, val_loader, optimizer=None, cfg=cfg, train=False, device=device)
@@ -347,12 +395,27 @@ def fit_with_cached(
             f"{epoch:>6}  {tr['loss']:>10.6f}  {vl['loss']:>10.6f}  {vl['kmse']:>10.6f}  "
             f"{vl['mse']:>10.6f}  {vl['tke']:>10.6f}  {lr:>10.2e}"
         )
+        log_epoch_metrics(
+            {
+                "train_loss": tr["loss"],
+                "validation_loss": vl["loss"],
+                "train_kmse": tr["kmse"],
+                "validation_kmse": vl["kmse"],
+                "train_tke": tr["tke"],
+                "validation_tke": vl["tke"],
+                "train_mse": tr["mse"],
+                "validation_mse": vl["mse"],
+                "learning_rate": lr,
+            },
+            epoch,
+        )
 
         if live_plot:
             _maybe_update_live_plot(history, live_curve_path)
 
         if vl["loss"] < best_val - 1e-6:
             best_val = vl["loss"]
+            best_epoch = epoch
             stale = 0
             torch.save(
                 {
@@ -361,7 +424,11 @@ def fit_with_cached(
                     "train_config": asdict(cfg),
                     "epoch": epoch,
                     "best_val_loss": best_val,
+                    "best_epoch": best_epoch,
                     "history": history,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
                 },
                 ckpt_path,
             )
@@ -375,6 +442,7 @@ def fit_with_cached(
                 break
 
     print(f"\nDone. Best checkpoint: {ckpt_path}  (val_loss={best_val:.6f})")
+    log_training_params({"best_epoch": best_epoch, "best_validation_loss": best_val})
     if live_plot:
         print(f"Live curve image: {live_curve_path}")
     return history, ckpt_path
@@ -388,7 +456,18 @@ def run_training(cfg: TrainConfig, live_plot: bool = False) -> Tuple[Dict[str, L
 
 def main():
     cfg = TrainConfig()
-    run_training(cfg, live_plot=False)
+    run_name = "fst-hmoe-mixer-resume" if cfg.resume_checkpoint else "fst-hmoe-mixer"
+    with training_run(
+        run_name,
+        asdict(cfg),
+        tags={
+            "kind": "trained_model",
+            "model_family": "fst_hmoe_ensemble",
+            "continuation": str(bool(cfg.resume_checkpoint)).lower(),
+        },
+    ):
+        _, checkpoint_path = run_training(cfg, live_plot=False)
+        log_training_artifact(checkpoint_path)
 
 
 if __name__ == "__main__":

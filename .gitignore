@@ -10,6 +10,7 @@ __pycache__/
 venv/
 env/
 RULES.md
+mlflow_runs
 
 # Downloaded data, model checkpoints, and submission bundles
 checkpoints/

@@ -28,6 +28,12 @@ from tqdm import tqdm
 
 from finetune.dataset import RealPDEDataset
 from models.stacked_ensemble import StackedEnsemble
+from mlflow_tracking import (
+    log_epoch_metrics,
+    log_training_artifact,
+    log_training_params,
+    training_run,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -136,7 +142,7 @@ def run_epoch(mixer, loader, optimizer, train: bool, device, grad_clip=GRAD_CLIP
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def _train():
     os.makedirs(SAVE_DIR, exist_ok=True)
     device = torch.device(DEVICE)
     print(f"Device: {device}")
@@ -145,6 +151,7 @@ def main():
     train_ds = RealPDEDataset(DATA_DIR, split="train", val_fraction=VAL_FRACTION, seed=SEED)
     val_ds   = RealPDEDataset(DATA_DIR, split="val",   val_fraction=VAL_FRACTION, seed=SEED)
     print(f"  train: {len(train_ds)} windows   val: {len(val_ds)} windows")
+    log_training_params({"train_windows": len(train_ds), "validation_windows": len(val_ds)})
 
     print("Building StackedEnsemble …")
     model = StackedEnsemble(
@@ -171,6 +178,7 @@ def main():
     ckpt_path = os.path.join(SAVE_DIR, "best_ensemble_mixer.pth")
 
     best_val = float("inf")
+    best_epoch = 0
     epochs_no_improve = 0
     print(f"\n{'Epoch':>6}  {'TrainLoss':>10}  {'ValLoss':>10}  {'ValMSE':>10}  {'ValTKE':>10}  {'LR':>10}")
     print("-" * 68)
@@ -184,9 +192,22 @@ def main():
 
         epoch_bar.set_postfix(tr=f"{tr_loss:.5f}", val=f"{vl_loss:.5f}", tke=f"{vl_tke:.5f}")
         tqdm.write(f"{epoch:>6}  {tr_loss:>10.6f}  {vl_loss:>10.6f}  {vl_mse:>10.6f}  {vl_tke:>10.6f}  {cur_lr:>10.2e}")
+        log_epoch_metrics(
+            {
+                "train_loss": tr_loss,
+                "validation_loss": vl_loss,
+                "train_mse": tr_mse,
+                "validation_mse": vl_mse,
+                "train_tke": tr_tke,
+                "validation_tke": vl_tke,
+                "learning_rate": cur_lr,
+            },
+            epoch,
+        )
 
         if vl_loss < best_val - 1e-6:
             best_val = vl_loss
+            best_epoch = epoch
             epochs_no_improve = 0
             torch.save({
                 "mixer_state_dict": model.mixer.state_dict(),
@@ -202,6 +223,34 @@ def main():
                 break
 
     print(f"\nDone. Best checkpoint: {ckpt_path}  (val_loss={best_val:.6f})")
+    return ckpt_path, best_epoch, best_val
+
+
+def main():
+    params = {
+        "model": "stacked_fno_cno_transolver_mixer",
+        "base_models": "FNO,CNO,Transolver",
+        "mixer_hidden": MIXER_HIDDEN,
+        "batch_size": BATCH_SIZE,
+        "learning_rate": LR,
+        "epochs": EPOCHS,
+        "validation_fraction": VAL_FRACTION,
+        "seed": SEED,
+        "alpha_mse": ALPHA,
+        "beta_tke": BETA,
+        "gradient_clip": GRAD_CLIP,
+        "early_stopping_patience": PATIENCE,
+        "cache_batch_size": CACHE_BATCH,
+        "device": DEVICE,
+    }
+    with training_run(
+        "stacked-ensemble",
+        params,
+        tags={"kind": "trained_model", "model_family": "ensemble"},
+    ):
+        ckpt_path, best_epoch, best_val = _train()
+        log_training_params({"best_epoch": best_epoch, "best_validation_loss": best_val})
+        log_training_artifact(ckpt_path)
 
 
 if __name__ == "__main__":

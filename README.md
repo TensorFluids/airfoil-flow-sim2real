@@ -1,4 +1,3 @@
-
 # Airfoil Flow Forecasting
 
 Research code for predicting experimental airfoil flow fields from short histories of measured velocity. The project explores whether compact learned corrections and model combinations can improve on neural-operator baselines, especially on temporal fluctuation and turbulence metrics.
@@ -47,6 +46,24 @@ python -m pip install -r requirements.txt
 The training scripts need the released real PIV data and baseline checkpoints. Download those from the official data release and place them in the paths expected by the scripts. Some scripts currently contain machine-specific data paths; making those configurable is planned before the training instructions are considered portable.
 
 The baseline loader can load FNO, CNO, and Transolver checkpoints. Checkpoints are not included in this repository; see the official data release for available files.
+
+## Experiment tracking
+
+The training scripts log hyperparameters, per-epoch training and validation metrics, and the best custom checkpoint to a local MLflow store in `mlflow_runs/`. That folder is ignored by Git. The default experiment is `airfoil-flow-forecasting`; you can override the tracking URI or experiment name with `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME`.
+
+To import the saved FNO, CNO, and Transolver baseline scores into the same experiment, first generate and score their local benchmark predictions, then run:
+
+```bash
+python experiments/benchmark/log_baselines_to_mlflow.py
+```
+
+Start the local comparison UI from the Track1 directory with:
+
+```bash
+mlflow ui --backend-store-uri ./mlflow_runs --host 127.0.0.1 --port 5000
+```
+
+Then open `http://127.0.0.1:5000` in a browser. Baseline runs import the existing local score files under `experiments/results/scores/`; they do not copy the large pretrained checkpoints into MLflow.
 
 ## Status
 
