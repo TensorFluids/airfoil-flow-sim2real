@@ -3,6 +3,23 @@
 This is where all our custom work lives. The starting kit files one level up are
 read-only references — never modify them.
 
+## Research timing
+
+For the separate research timing benchmark, run the following from `Track1`:
+
+```powershell
+python experiments/benchmark/benchmark_timing.py
+python experiments/benchmark/compare_models.py
+python experiments/benchmark/log_benchmark_scores_to_mlflow.py
+```
+
+`timescore_competition` is the original time formula. `timescore_self` is fresh
+FNO-relative speedup, and `latency_ms_self` is median time per complete forecast.
+The benchmark always measures FNO in the same run. Use `--models fno_fp16 ensemble`
+to time a subset, or `--device cpu` to benchmark on CPU. Cached base predictions
+are never substituted for ensemble forward passes. Details and compatibility
+notes are in [EVALUATION_DECISIONS.md](EVALUATION_DECISIONS.md).
+
 ## Structure
 
 ```

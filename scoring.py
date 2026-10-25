@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Subscore reference implementation for RealPDE Track 1 Sim2Real.
 
-The five subscores computed here are the ones the leaderboard computes, so you
-can check them locally against your own reference data. The leaderboard combines
+The five subscore formulas are inherited from the leaderboard. This personal
+project names its legacy time output ``timescore_competition`` (formerly
+``time_score``). Fresh FNO-relative ``timescore_self`` measurements are computed
+separately by experiments/benchmark/benchmark_timing.py. The leaderboard combines
 them into a single ``final_score``; that combination is not published, and this
 file stops at the subscores.
 """
@@ -153,7 +155,7 @@ def score_error(err: float, scale: float = 0.5) -> float:
     return float(100.0 / (1.0 + abs(scale) * max(float(err), 0.0)))
 
 
-def score_time(t_neural: float, r_min: float = 1.0) -> float:
+def score_time_competition(t_neural: float, r_min: float = 1.0) -> float:
     # ST = 1 / (1 + sqrt(r)), r = t_neural / t_numerical; score = 100 * ST.
     # A missing, zero, negative or non-finite time scores 0.
     if not np.isfinite(t_neural) or t_neural <= 0.0:
@@ -287,7 +289,7 @@ def write_detailed_results(output_dir: Path, scores: dict[str, Any]) -> None:
 
 ZERO_SCORES = {
     "rel_l2_score": 0.0, "tke_score": 0.0, "mvpe_score": 0.0,
-    "time_score": 0.0, "sps_score": 0.0,
+    "timescore_competition": 0.0, "sps_score": 0.0,
 }
 
 
@@ -327,7 +329,7 @@ def _score_submission(input_dir: Path, reference_dir: Path) -> dict:
         "rel_l2_score": score_error(rel_l2),
         "tke_score": score_error(tke),
         "mvpe_score": score_error(mvpe),
-        "time_score": score_time(mean_t_neural_s),
+        "timescore_competition": score_time_competition(mean_t_neural_s),
         "sps_score": score_sps(sps),
     }
 

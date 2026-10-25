@@ -22,7 +22,19 @@ Training code is under `experiments/finetune/`, model definitions are under `exp
 
 ## Evaluation
 
-Experiments use five complementary measures: relative velocity error, turbulent kinetic energy (TKE) error, mean velocity profile error (MVPE), inference time, and Safe Prediction Score (SPS), which considers prediction accuracy and uncertainty intervals.
+The [research evaluation decisions](experiments/EVALUATION_DECISIONS.md) define the timing metrics. `timescore_competition` preserves the original 0-100 formula. `timescore_self` is the measured FNO latency divided by the complete proposed model's latency: 1 means equal speed, above 1 means faster, and below 1 means slower. `latency_ms_self` reports the measured median latency. The supplied fine-tuned FNO is the primary reference; new self measurements require a fresh benchmark.
+
+To measure timing and attach the results to the existing model runs, use:
+
+```powershell
+python experiments/benchmark/benchmark_timing.py
+python experiments/benchmark/compare_models.py
+python experiments/benchmark/log_benchmark_scores_to_mlflow.py
+```
+
+The timing benchmark uses batch size 1, 5 warm-up forecasts and 30 measured forecasts per model. It includes normalization, all required model forward passes, output conversion, and CPU/GPU input/output transfers; it excludes checkpoint loading and file I/O. All component models stay resident during a timed forecast. Use the same device for all models; `--device cpu` is available if GPU memory is insufficient. Predictions used for accuracy are not overwritten. Only models present in a validated timing report receive self metrics; the report records environment, input, code and checkpoint fingerprints. See the [decision record](experiments/EVALUATION_DECISIONS.md#implementation-and-commands) for details.
+
+Prediction quality is described by relative velocity error, turbulent kinetic energy (TKE) error, mean velocity profile error (MVPE), and Safe Prediction Score (SPS), which considers prediction accuracy and uncertainty intervals. Research timing is reported separately. Legacy competition reports retain five subscores, including `timescore_competition`; `mean_subscore` averages those five only and excludes self metrics.
 
 The checked-in experiment scripts currently evaluate against windows from a single example trajectory. Their results are preliminary and do not establish generalization across airfoil operating conditions. In particular, some recorded runtime measurements exclude the baseline-model forward passes, so they should not be read as end-to-end timings.
 

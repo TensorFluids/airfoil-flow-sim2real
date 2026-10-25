@@ -3,6 +3,8 @@
 Applies to both **Track 1 (Sim2Real)** and **Track 2 (LTTTA)**.  
 The 5 subscores are identical across tracks; only the interface differs.
 
+For Track 1 research reporting, see the [2026-10-25 evaluation decision](experiments/EVALUATION_DECISIONS.md): `timescore_self` is measured speedup versus the supplied fine-tuned FNO, and `latency_ms_self` is median complete-forecast latency. The inherited formula below is named `timescore_competition`. Implementation is available on branch `personal-timescore-metric`; fresh timing measurements remain to be run.
+
 ---
 
 ## The Problem
@@ -70,7 +72,7 @@ FNO baseline scores **97.09** — near-saturated, not a focus area.
 
 ---
 
-### 4. `time_score` — Inference Speed
+### 4. `timescore_competition` — Legacy Inference Speed Score
 
 ```
 r = t_neural / 0.72896        (0.72896s = reference numerical solver time per sample)
@@ -81,14 +83,29 @@ Rewards models faster than the numerical CFD solver.
 On the eval server (GPU, CUDA 12.1), all models will be much faster than on CPU.  
 CPU benchmark results (from local run):
 
-| Model | Time/sample | time_score (CPU) |
+| Model | Time/sample | timescore_competition (CPU) |
 |-------|------------|-----------------|
 | FNO (fp16) | 0.23s | 63.88 |
 | CNO | 0.73s | 50.03 |
 | Transolver | 1.59s | 40.38 |
 
-On GPU, all three will likely score 90+. Smaller/simpler models have an edge here.  
-**Do not over-engineer for speed** — this is less decisive than TKE/SPS on GPU.
+These are historical measurements. The original scorer called the metric
+`time_score`; its formula and saved numerical values are preserved under the
+explicit `timescore_competition` name. The numerical-solver reference's
+measurement setup is undocumented, so this is not a controlled CFD speedup.
+
+For research reporting, measure complete forecasts on consistent hardware:
+
+```text
+timescore_self = median_latency_fno / median_latency_complete_model
+latency_ms_self = 1000 * median_latency_complete_model_seconds
+```
+
+FNO has `timescore_self = 1`. A faster model has a ratio above 1; a slower model
+has a ratio below 1. This ratio is not bounded at 100 and is not averaged into
+`mean_subscore`. Include all baseline forward passes when timing a mixer.
+Use `python experiments/benchmark/benchmark_timing.py`, followed by the comparison
+and MLflow import commands in the [decision record](experiments/EVALUATION_DECISIONS.md#implementation-and-commands).
 
 ---
 
@@ -130,7 +147,7 @@ Practical strategies to improve SPS:
 | rel_l2_score | Raw prediction accuracy | 96.86 (FNO) | Low — near-saturated |
 | tke_score | Temporal fluctuation energy | 81.59 (FNO) | **High** — all models miss turbulence |
 | mvpe_score | Time-mean wake structure | 97.09 (FNO) | Low — near-saturated |
-| time_score | Inference speed vs CFD solver | 63.88 (FNO, CPU) | Medium — GPU will be ~90+ |
+| timescore_competition | Legacy speed score using a fixed solver reference | 63.88 (FNO, historical CPU run) | Report fresh latency and timescore_self for research |
 | sps_score | Uncertainty calibration | 27.04 (FNO) | **Very High** — all baselines use dumb default |
 
 ---
@@ -236,7 +253,7 @@ Also starts from the three frozen baseline predictions, but uses a spatiotempora
 | **rel_l2_score** | **96.86** | 95.85 | 93.49 |
 | **tke_score** | **81.59** | 77.58 | 69.50 |
 | **mvpe_score** | **97.09** | 96.10 | 93.65 |
-| **time_score** | **63.88** | 50.03 | 40.38 |
+| **timescore_competition** | **63.88** | 50.03 | 40.38 |
 | **sps_score** | **27.04** | 21.97 | 5.91 |
 
 ---

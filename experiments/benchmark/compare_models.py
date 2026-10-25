@@ -20,8 +20,10 @@ Writes to experiments/results/:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -30,6 +32,9 @@ import numpy as np
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "_vendor"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "experiments"))
+
+from benchmark.timing_metrics import COMPETITION_METRIC_KEYS, SELF_METRIC_KEYS, optional_self_timing, self_metrics
 
 from scoring import (  # noqa: E402
     _score_submission,
@@ -45,7 +50,7 @@ RESULTS_DIR = os.path.join(REPO_ROOT, "experiments", "results")
 REF_DIR = os.path.join(RESULTS_DIR, "ref")
 
 MODELS = ["fno_fp16", "cno", "transolver", "uniform_average", "ensemble", "fst_hmoe"]
-SUBSCORES = ["rel_l2_score", "tke_score", "mvpe_score", "time_score", "sps_score"]
+SUBSCORES = list(COMPETITION_METRIC_KEYS)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -84,13 +89,14 @@ def save_scores(model: str, scores: dict) -> str:
 
 
 def print_table(all_scores: dict[str, dict]) -> str:
-    col_w = 14
-    header = f"{'Model':<14}" + "".join(f"{s:>{col_w}}" for s in SUBSCORES)
+    columns = SUBSCORES + [key for key in SELF_METRIC_KEYS if any(key in scores for scores in all_scores.values())]
+    widths = {key: max(14, len(key) + 2) for key in columns}
+    header = f"{'Model':<17}" + "".join(f"{s:>{widths[s]}}" for s in columns)
     sep = "-" * len(header)
     rows = [header, sep]
     for model, scores in all_scores.items():
-        row = f"{model:<14}" + "".join(
-            f"{scores.get(s, float('nan')):>{col_w}.2f}" for s in SUBSCORES
+        row = f"{model:<17}" + "".join(
+            f"{scores[s]:>{widths[s]}.4f}" if s in scores else f"{'N/A':>{widths[s]}}" for s in columns
         )
         rows.append(row)
     table = "\n".join(rows)
@@ -116,13 +122,32 @@ def plot_bar_subscores(all_scores: dict[str, dict], out_path: str) -> None:
     ax.set_xticks(x + width * (n_models - 1) / 2)
     ax.set_xticklabels(SUBSCORES, rotation=15, ha="right")
     ax.set_ylabel("Score (0–100)")
-    ax.set_title("RealPDE Track 1 – Baseline Subscores Comparison")
+    ax.set_title("Competition subscores (historical timing protocol)")
     ax.legend()
     ax.set_ylim(0, 105)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     print(f"Saved  {out_path}")
+
+
+def plot_self_timing(all_scores: dict[str, dict], out_path: str) -> None:
+    import matplotlib.pyplot as plt
+
+    rows = {name: scores for name, scores in all_scores.items() if "timescore_self" in scores}
+    if not rows:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].bar(list(rows), [scores["latency_ms_self"] for scores in rows.values()])
+    axes[0].set_ylabel("Median latency (ms per 20-frame forecast); lower is better")
+    axes[1].bar(list(rows), [scores["timescore_self"] for scores in rows.values()])
+    axes[1].axhline(1.0, color="black", linestyle="--", linewidth=1)
+    axes[1].set_ylabel("timescore_self (speedup vs FNO); higher is better")
+    for axis in axes:
+        axis.tick_params(axis="x", rotation=35)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
 def plot_line_rel_l2(
@@ -260,6 +285,10 @@ def write_report(all_scores: dict[str, dict], table: str, out_path: str, control
     lines = [
         "# RealPDE Track 1 – Benchmark Report",
         "",
+        "`timescore_competition` preserves the original 0-100 formula. "
+        "`timescore_self` is measured FNO latency / measured complete-model latency (a ratio, not a 0-100 score). "
+        "`latency_ms_self` is the median batch-one latency. Self metrics appear only for models in a validated fresh timing report.",
+        "",
         "## Score Comparison",
         "",
         "```",
@@ -312,6 +341,7 @@ def write_report(all_scores: dict[str, dict], table: str, out_path: str, control
         "| File | Description |",
         "|------|-------------|",
         "| bar_subscores.png | Bar chart comparing all 5 subscores |",
+        "| self_timing.png | Separate latency and FNO-relative speedup plots, when measured |",
         "| line_rel_l2.png | Per-sample relative L2 error over time |",
         "| heatmap_u.png | Spatial MAE heatmap – u channel |",
         "| heatmap_v.png | Spatial MAE heatmap – v channel |",
@@ -326,13 +356,24 @@ def write_report(all_scores: dict[str, dict], table: str, out_path: str, control
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--timings-self", type=Path, help="Fresh report from benchmark_timing.py; default: results/timing_self.json when available.")
+    parser.add_argument("--competition-only", action="store_true", help="Do not attach self timing measurements.")
+    args = parser.parse_args(argv)
+    if args.competition_only and args.timings_self:
+        parser.error("Use --timings-self or --competition-only, not both.")
     try:
         import matplotlib  # noqa: F401
     except ImportError:
         sys.exit("matplotlib is required.  Install it with:  pip install matplotlib")
 
     targets = load_targets()
+    timing, timing_path = optional_self_timing(args.timings_self, Path(REPO_ROOT), args.competition_only)
+    if timing is None:
+        print("No self timing attached. Run benchmark_timing.py for fresh FNO-relative timings.")
+    else:
+        print(f"Self timing source: {timing_path}")
     print(f"Targets shape: {targets.shape}")
 
     all_scores: dict[str, dict] = {}
@@ -348,6 +389,8 @@ def main() -> None:
         try:
             pred, _ = load_predictions(model)
             scores = score_model(model, targets)
+            if timing is not None and model in timing["models"]:
+                scores.update(self_metrics(timing, model))
         except Exception as exc:
             print(f"  ERROR: {exc}")
             import traceback; traceback.print_exc()
@@ -376,6 +419,7 @@ def main() -> None:
     # ── plots ──────────────────────────────────────────────────────────────────
     print("\nGenerating plots …")
     plot_bar_subscores(all_scores, os.path.join(RESULTS_DIR, "bar_subscores.png"))
+    plot_self_timing(all_scores, os.path.join(RESULTS_DIR, "self_timing.png"))
 
     if model_preds:
         plot_line_rel_l2(model_preds, targets, os.path.join(RESULTS_DIR, "line_rel_l2.png"))
