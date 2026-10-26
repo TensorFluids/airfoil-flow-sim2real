@@ -20,6 +20,116 @@ An **untrained uniform-average control** combines FNO, CNO, and Transolver with 
 
 Training code is under `experiments/finetune/`, model definitions are under `experiments/models/`, and local evaluation tools are under `experiments/benchmark/`.
 
+## TKE loss experiments: what this branch adds
+
+The `tke-loss-ablation` branch was created from `personal-timescore-metric` at
+commit `7c832e2`. It therefore includes the timing metrics and adds a separate
+training study. The timing branch keeps the committed timing implementation;
+this branch stores the TKE experiment code, dataset extensions, tests and protocol.
+
+The research question is: **does directly supervising physical velocity
+fluctuation energy improve the stacked ensemble without unacceptable loss of
+field accuracy, mean velocity profile accuracy, or SPS?** This study changes
+the training objective of the existing `SpatialAttentionMixer`, rather than
+introducing a new forecasting architecture. FNO, CNO and Transolver remain
+frozen; only the mixer is trained. The supplied checkpoints have already been
+pretrained on simulation and fine-tuned on PIV data. This study reads real PIV
+recordings; it does not retrain the baseline models or use CFD training files.
+
+Four freshly initialized mixers are compared:
+
+| Arm | Objective | Why it is included |
+|---|---|---|
+| `lambda_0` | Normalized field MSE | Control with no auxiliary penalty |
+| `lambda_0p05` | Field MSE + 0.05 * calibrated physical TKE MSE | Weak physical TKE supervision |
+| `lambda_0p1` | Field MSE + 0.10 * calibrated physical TKE MSE | Stronger physical TKE supervision |
+| `legacy_variance` | Field MSE + original normalized per-channel variance MSE, beta = 1 | Reference to the older ensemble loss |
+
+The original variance penalty and the new physical TKE loss are different
+formulations. The former compares normalized per-channel sample variances;
+the latter compares half the sum of physical u/v population variances. The
+legacy arm reproduces the old loss under this study's common training setup,
+not the old training run or its scheduler/early stopping. The zero-lambda
+control is field MSE alone. Exact formulas and the full-grid mask policy are in
+[TKE_ABLATION.md](experiments/TKE_ABLATION.md).
+
+### What is held fixed
+
+- Seed 42 and identical initial mixer weights, epoch-wise batch order, optimizer
+  and budget across arms; the old trained mixer is not used as initialization.
+- Default budget: 100 epochs per arm, batch size 16, hidden width 32, Adam with
+  constant learning rate `1e-4`, gradient clipping at 1.0, no early stopping.
+- A file-level train/validation/test split, approximately 70%/15%/15%. With the
+  current local data this is 57/12/12 trajectories and 2381/485/475 windows.
+  Windows from the same recording stay in one split. Known bad/excluded files
+  are skipped, and content hashes detect renamed copies across splits.
+- One shared disk cache of frozen-model predictions (~3.83 GiB for the current
+  split). Baseline predictions use float16 storage; targets retain physical
+  float32 values and original zeros. Mixer training uses float32.
+- A physical-TKE scale measured once on 64 deterministic training windows
+  before optimization. Initial gradient norms and weighted gradient ratios are
+  also recorded; scalar loss balance does not guarantee equal gradient influence.
+
+### How to run and resume
+
+From `Track1`, with the project environment activated:
+
+```powershell
+# Read-only inspection: prints configuration and actual trajectory splits.
+python experiments/finetune/train_tke_ablation.py --plan
+
+# Optional preparation: frozen-model forward passes and loss/gradient diagnostics.
+# This creates caches and protocol files, but performs no optimizer steps.
+python experiments/finetune/train_tke_ablation.py --prepare-only
+
+# Train/resume all four arms sequentially, then evaluate validation trajectories.
+python experiments/finetune/train_tke_ablation.py
+```
+
+Default study ID: `stacked-tke-v2`. Rerun the exact same command to resume from
+the last completed epoch, including optimizer and RNG state. Completed arms
+are skipped and their existing MLflow runs reused. A partially completed epoch
+is repeated. Data/code/configuration fingerprints reject silently changing a
+prepared study; a branch switch does not make an old manifest compatible with
+different source files. Do not edit a manifest to bypass this protection.
+
+### Validation, test selection and saved outputs
+
+Every arm completes its full epoch budget and retains both `last.pth` and
+`best_validation_field.pth`. The default primary checkpoint is the one with
+lowest validation field MSE, a common criterion across all objectives. Each
+final checkpoint is also scored separately for the fixed-budget ablation.
+
+Training stops after validation evaluation. Compare validation relative L2,
+TKE, MVPE and SPS; define acceptable trade-offs before selecting a winner.
+Optional L2/MVPE/SPS deterioration limits are documented in the protocol.
+The training command does not score the test split automatically.
+
+After validation review, the separate `--evaluate-selected ARM` command with a
+`--selection-reason` locks one arm and checkpoint hash before test scoring.
+It attaches test metrics to that model's existing MLflow run. Once test results
+are exposed, do not use them to choose another configuration. See the
+[complete commands](experiments/TKE_ABLATION.md#commands) before this step.
+
+- Protocol, calibration, initial weights and checkpoints:
+  `checkpoints/tke_ablation/<sweep-id>/`.
+- Shared frozen predictions: `experiments/cache/tke_ablation/`.
+- Scores, per-trajectory predictions and comparison/checklist files:
+  `experiments/results/tke_ablation/<sweep-id>/`.
+- MLflow experiment: `airfoil-flow-forecasting`, one model run per arm with
+  epoch curves and validation/test metric prefixes. All generated artifacts
+  remain outside Git.
+
+No training job is started by committing or checking out this branch. The code
+is an experiment implementation, not evidence that a particular loss wins.
+Holdouts are excluded from the new mixer training; they are not guaranteed
+unseen by the supplied pretrained baselines. The losses remain full-grid
+because no explicit validity mask is present in the inspected release, and a
+single seed does not establish robustness across independent training runs.
+
+For setup, limitations, all CLI options, exact loss definitions and tests, use
+the [full experiment protocol](experiments/TKE_ABLATION.md).
+
 ## Evaluation
 
 The [research evaluation decisions](experiments/EVALUATION_DECISIONS.md) define the timing metrics. `timescore_competition` preserves the original 0-100 formula. `timescore_self` is the measured FNO latency divided by the complete proposed model's latency: 1 means equal speed, above 1 means faster, and below 1 means slower. `latency_ms_self` reports the measured median latency. The supplied fine-tuned FNO is the primary reference; new self measurements require a fresh benchmark.
@@ -36,7 +146,7 @@ The timing benchmark uses batch size 1, 5 warm-up forecasts and 30 measured fore
 
 Prediction quality is described by relative velocity error, turbulent kinetic energy (TKE) error, mean velocity profile error (MVPE), and Safe Prediction Score (SPS), which considers prediction accuracy and uncertainty intervals. Research timing is reported separately. Legacy competition reports retain five subscores, including `timescore_competition`; `mean_subscore` averages those five only and excludes self metrics.
 
-The checked-in experiment scripts currently evaluate against windows from a single example trajectory. Their results are preliminary and do not establish generalization across airfoil operating conditions. In particular, some recorded runtime measurements exclude the baseline-model forward passes, so they should not be read as end-to-end timings.
+The original benchmark scripts evaluate windows from a single example trajectory. Those results are preliminary and do not establish generalization across airfoil operating conditions. In particular, some recorded runtime measurements exclude the baseline-model forward passes, so they should not be read as end-to-end timings. The TKE-ablation runner instead uses disjoint trajectory-level training, validation and test splits. These splits are held out from the new mixer training, not guaranteed unseen by the supplied pretrained baselines.
 
 Once the three baseline predictions are cached, run the control and comparison from the repository root:
 
@@ -91,7 +201,7 @@ Then open `http://127.0.0.1:5000` in a browser. Baseline runs import the existin
 
 ## Status
 
-This is an in-progress research project. The current code records initial model experiments and local benchmark comparisons. Next steps include making data and checkpoint paths configurable, evaluating on trajectory-level held-out conditions, revisiting end-to-end timing, and documenting reproducible training runs.
+This is an in-progress research project. The current code records initial model experiments and local benchmark comparisons, and provides a controlled four-arm TKE-loss protocol with trajectory-level holdouts. The protocol's implementation is not evidence of completed experiments. Next steps include running the study, checking robustness across seeds, improving path portability in older scripts, and revisiting end-to-end timing.
 
 ## Acknowledgments
 

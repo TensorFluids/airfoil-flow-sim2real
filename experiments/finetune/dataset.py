@@ -81,6 +81,8 @@ class RealPDEDataset(Dataset):
         val_fraction: fraction of files held out for validation
         seed:         random seed for file-level train/val split
         exclude:      list of filenames (basename) to skip entirely
+        file_names:   explicit trajectory list, bypassing the random split
+        normalize_targets: False returns physical targets (including exact zero masks)
     """
 
     def __init__(
@@ -91,10 +93,13 @@ class RealPDEDataset(Dataset):
         val_fraction: float = 0.1,
         seed: int = 42,
         exclude: Optional[List[str]] = None,
+        file_names: Optional[List[str]] = None,
+        normalize_targets: bool = True,
     ):
         super().__init__()
         self.sub_s = sub_s
         self.split = split
+        self.normalize_targets = normalize_targets
 
         if exclude is None:
             exclude = _DEFAULT_EXCLUDE
@@ -113,7 +118,13 @@ class RealPDEDataset(Dataset):
         shuffled = list(all_files)
         rng.shuffle(shuffled)
         n_val = max(1, int(len(shuffled) * val_fraction))
-        if split == "val":
+        if file_names is not None:
+            if len(set(file_names)) != len(file_names):
+                raise ValueError("Explicit file_names must not contain duplicates.")
+            if not file_names or any(name not in all_files for name in file_names):
+                raise ValueError("Explicit file_names must name existing, non-excluded trajectories.")
+            chosen_files = list(file_names)
+        elif split == "val":
             chosen_files = shuffled[:n_val]
         else:
             chosen_files = shuffled[n_val:]
@@ -125,6 +136,8 @@ class RealPDEDataset(Dataset):
             try:
                 T = _get_T(fpath)
             except Exception as exc:
+                if file_names is not None:
+                    raise RuntimeError(f"Cannot read explicitly selected trajectory {fname}") from exc
                 print(f"[RealPDEDataset] Skipping {fname}: {exc}")
                 continue
             for start in _build_windows(T, window=20):
@@ -171,7 +184,7 @@ class RealPDEDataset(Dataset):
 
         # Normalise
         inp_norm = (inp - _MEAN_IN) / _STD_IN
-        tgt_norm = (tgt - _MEAN_TGT) / _STD_TGT
+        tgt_norm = (tgt - _MEAN_TGT) / _STD_TGT if self.normalize_targets else tgt
 
         return (
             torch.from_numpy(inp_norm).float(),  # (20, H, W, 3)

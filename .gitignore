@@ -25,6 +25,7 @@ experiments/submissions/
 # Local caches and editor files
 .ua/
 .cache/
+experiments/cache/
 *.cache
 _vendor/
 .vscode/

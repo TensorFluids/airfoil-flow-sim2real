@@ -3,6 +3,36 @@
 This is where all our custom work lives. The starting kit files one level up are
 read-only references — never modify them.
 
+## Controlled TKE-loss study
+
+See [TKE_ABLATION.md](TKE_ABLATION.md) for the current four-arm stacked-mixer
+protocol: field MSE alone, physical TKE penalties at lambda 0.05 and 0.10, and
+the original normalized per-channel variance penalty at beta 1.0. Each arm
+uses the same initialization, trajectory split and 100-epoch budget.
+
+Run these commands from the **Track1 repository root**, not this subfolder:
+
+```powershell
+# Inspect without training or creating runs.
+python experiments/finetune/train_tke_ablation.py --plan
+
+# Run/resume four arms; validation scoring only, never automatic test scoring.
+python experiments/finetune/train_tke_ablation.py
+```
+
+Optional `--prepare-only` builds the shared baseline cache and records initial
+loss/gradient diagnostics without optimizer steps. The default checkpoint
+rule is minimum validation field MSE, shared across arms; final checkpoints
+are retained and scored too. After reviewing validation trade-offs, use the
+documented `--evaluate-selected ARM --selection-reason "..."` command to lock
+and test one checkpoint in its existing MLflow run. Test scores must not be used
+to choose another arm. The loss remains full-grid because the local data has
+no explicit validity-mask dataset; see the protocol for limitations.
+
+Generated caches, checkpoints, scores and predictions remain Git-ignored.
+The packaging instructions and competition rules below are historical starting-kit
+notes, not requirements for running this standalone research study.
+
 ## Research timing
 
 For the separate research timing benchmark, run the following from `Track1`:
